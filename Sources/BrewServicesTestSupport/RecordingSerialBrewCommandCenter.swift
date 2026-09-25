@@ -17,6 +17,10 @@ public actor RecordingSerialBrewCommandCenter: BrewCommandCenter {
         inner = SerialBrewCommandCenter(executionContext: executionContext)
     }
 
+    public func setReconciler(_ reconciler: any BrewOperationReconciling) async {
+        await inner.setReconciler(reconciler)
+    }
+
     public func phase(for id: BrewOperationID) async -> BrewOperationPhase {
         await inner.phase(for: id)
     }

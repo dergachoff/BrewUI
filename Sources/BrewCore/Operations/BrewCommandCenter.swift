@@ -41,4 +41,13 @@ public protocol BrewCommandCenter: Actor {
     /// **Perform** `command` for effect: broadcast its output with colour forced on, discard the result, and
     /// throw ``BrewCommandError/failed(exitCode:stderr:)`` on a non-zero exit. For mutations (install/upgrade/…).
     func perform(_ command: BrewCommand, id: BrewOperationID) async throws
+
+    /// Registers the reconciler awaited during the ``BrewOperationPhase/reconciling(_:)`` window.
+    /// Last registration wins.
+    func setReconciler(_ reconciler: any BrewOperationReconciling) async
+}
+
+public extension BrewCommandCenter {
+    /// Centers that track no phases have no settling window to reconcile in.
+    func setReconciler(_: any BrewOperationReconciling) async {}
 }

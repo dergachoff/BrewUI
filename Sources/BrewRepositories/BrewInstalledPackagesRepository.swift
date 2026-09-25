@@ -36,10 +36,11 @@ public final class BrewInstalledPackagesRepository: InstalledPackagesRepository 
     @ObservationIgnored private let commandRunner: BrewCommandRunning
     @ObservationIgnored private let locator: any BrewExecutableLocating
     @ObservationIgnored private let cache: InstalledInventoryCache
-    @ObservationIgnored private let commandCenter: any BrewCommandCenter
     @ObservationIgnored private let environment: any HomebrewEnvironmentReading
     @ObservationIgnored private let now: @Sendable () -> Date
-    @ObservationIgnored private var completionObserverTask: Task<Void, Never>?
+    @ObservationIgnored private var reconcilerRegistrationTask: Task<Void, Never>?
+    /// Newest fetch in flight; fetches chain onto it so two refreshes cannot apply out of order.
+    @ObservationIgnored private var fetchTask: Task<Void, Never>?
 
     /// Every mutating operation forces a fetch, so the tap refresh runs on an interval instead.
     @ObservationIgnored private var lastTapUpdateAttempt: Date?
@@ -58,11 +59,13 @@ public final class BrewInstalledPackagesRepository: InstalledPackagesRepository 
         self.commandRunner = commandRunner
         self.locator = locator
         self.cache = cache
-        self.commandCenter = commandCenter
         self.environment = environment
         self.now = now
-        completionObserverTask = Task { @MainActor [weak self] in
-            await self?.observeOperationCompletions()
+        reconcilerRegistrationTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            await commandCenter.setReconciler(self)
         }
     }
 
@@ -83,7 +86,7 @@ public final class BrewInstalledPackagesRepository: InstalledPackagesRepository 
     }
 
     isolated deinit {
-        completionObserverTask?.cancel()
+        reconcilerRegistrationTask?.cancel()
     }
 
     /// Production wiring: the shared zsh execution policy, reconciled off `commandCenter`.
@@ -130,25 +133,24 @@ public final class BrewInstalledPackagesRepository: InstalledPackagesRepository 
         }
     }
 
-    // MARK: - Reconcile on mutating-operation completion
+    // MARK: - Fetch / state plumbing
 
-    /// Reconciles after a mutating `brew` operation completes by forcing a fresh fetch. Uses the
-    /// existing command-center phase stream (running → idle) rather than a bespoke callback.
-    private func observeOperationCompletions() async {
-        var lastPhase: [BrewOperationID: BrewOperationPhase] = [:]
-        let stream = await commandCenter.allPhaseChanges()
-        for await (id, phase) in stream {
-            let previous = lastPhase[id] ?? .idle
-            lastPhase[id] = phase
-            if case .running = previous, case .idle = phase {
-                await load(forceRefresh: true)
-            }
+    /// Waits for any fetch already in flight, then fetches. Joining it instead would answer a reconcile
+    /// with a snapshot taken before `brew` exited.
+    private func fetchAndStore() async {
+        let previous = fetchTask
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.performFetch()
+        }
+        fetchTask = task
+        await task.value
+        if fetchTask == task {
+            fetchTask = nil
         }
     }
 
-    // MARK: - Fetch / state plumbing
-
-    private func fetchAndStore() async {
+    private func performFetch() async {
         do {
             let packages = try await fetchInstalledPackages()
             // Only a completed fetch clears this; repainting a cached snapshot answers nothing.
@@ -230,6 +232,16 @@ public final class BrewInstalledPackagesRepository: InstalledPackagesRepository 
             installedRepositoryLogger.error("Failed to decode \(command, privacy: .public): \(error)")
             throw BrewRepositoryError.malformedBrewOutput(command: command)
         }
+    }
+}
+
+// MARK: - BrewOperationReconciling
+
+extension BrewInstalledPackagesRepository: BrewOperationReconciling {
+    /// Refetches the inventory before the command center publishes the terminal phase. Survives
+    /// cancellation of the submitting task, since ``fetchAndStore()`` works in an unstructured task.
+    public func reconcile() async {
+        await load(forceRefresh: true)
     }
 }
 

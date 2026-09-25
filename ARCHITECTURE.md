@@ -47,6 +47,13 @@ coalesces duplicate operation IDs and publishes phase/output streams. Mutating c
 this shared pipeline; feature executors remain thin. Repositories own read/parsing work such as
 installed inventory. Doctor reads also use the centre so their output appears in the console.
 
+A mutating operation runs `running → reconciling → idle | failed`. The centre awaits a registered
+`BrewOperationReconciling` (the installed repository, which registers itself) before publishing the
+terminal phase, so no surface sees a finished operation while the inventory still describes the world
+as it was. Busy chrome is therefore a pure function of the phase rather than a latch each surface has
+to release. Read-only work has nothing to reconcile and settles directly, and a failed command
+reconciles too, because a batch upgrade can change some packages and still exit non-zero.
+
 Commands run asynchronously with cancellation and preserved or streamed stdout/stderr. Production
 execution, including self-upgrades, uses `ZshBrewCommandRunner` and the
 [isolated system zsh environment](#homebrew-configuration). Arguments and environment assignments
